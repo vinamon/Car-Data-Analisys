@@ -1,0 +1,973 @@
+---
+title: "Analiza rynku samochodowego" 
+author: "Marceli Denysiuk" 
+format: 
+  html: 
+    theme: cosmo
+    toc: true 
+    toc-location: left
+    header-includes: |
+      <style>
+      table {
+        width: auto !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+      }
+      </style>
+    toc-title: "Spis treści" 
+    toc-depth: 2 
+    number-sections: true 
+    smooth-scroll: true
+    bibliography: references.bib
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Cel projektu
+
+Analiza rynku samochodowego w celu wyłonienia najlepszych segmentów na podstawie parametrów technicznych oraz ocen eksperckich.
+
+### Problematyka
+
+Poszukiwanie ciekawych, praktycznych lub nawet decyzyjnych dla konsumenta wniosków oraz wyłanianie liderów na rynku dzięki analizie dostepnęgo zbioru danych.
+
+## Dane
+
+Mamy zbiór około 3500 wierszy. Zbiór danych pochodzi z amerykańskiego serwisu internetowego zajmującego sie handlem nowych i używanych samochodów. Można by to porównać do polskiego Otomoto, tyle, że tutaj mieliśmy recenzje ekspertów na temat tych samochodów. W kolumnach tekstowych mamy cechy takie jak:
+
+-   Marka i model samochodu
+
+-   Krótkie recenzje ekspertów na temat samochodu
+
+-   Rodzaj skrzyni biegów
+
+-   Rodzaj silnika
+
+-   Rodzaj układu napędowego
+
+-   Mocne i słabe strony samochodu
+
+Natomiast w kolumnach numerycznych mamy:
+
+-   Rok produkcji
+
+-   Liczbę koni mechanicznych
+
+-   Moment obrotowy w NM
+
+-   Ocenę nadaną przez eksperta od 1.0 do 5.0
+
+-   3 wymiary samochodu
+
+-   Wage samochodu
+
+::: callout-warning
+## Pamiętajmy
+
+Pamietajmy, że analiza w dużej mierze opiera sie na subiektywnych odczuciach ekspertów, więc trzeba podchodzić do wniosków z lekkim dystansem.
+:::
+
+## Pytania i Hipotezy
+
+### Najczęściej występujące problemy w samochodach? 
+
+*Hipoteza*: Najwięcej problemów jest ze złożoną elektroniką.
+
+### Jakie marki są najbardziej lubiane?
+
+*Hipoteza*: Powielając panujące przekonanie o jakości japońskich marek: najbardziej lubiane są japońskie marki.
+
+### Które samochody są bardziej lubiane - stare, czy nowe?
+
+*Hipoteza*: Bardziej lubiane są stare samochody.
+
+### Czy moc samochodu ma wpływ na poprawe oceny?
+
+*Hipoteza*: Moc samochodu nie ma wpływu na poprawe oceny.
+
+## Czyszczenie danych
+
+[Niewyczyszczony zbiór danych:]{.underline}
+
+```{r}
+library(tidyverse)
+library(kableExtra)
+
+# 1. Wczytanie danych
+raw_data <- read.csv("review_data.csv", sep = ";")
+
+# 2. Podgląd surowego zbioru (5 wierszy, wzorzec bazowy)
+raw_data %>%
+  # Wykluczamy kolumny wg wzorca
+  select(
+    -url, 
+    -word.count.for.full.description, 
+    -word.count.for..GPT.2.Summarization, 
+    -keywords, 
+    -cargo.capacity..all.seats.In.place
+  ) %>%
+  head(4) %>%
+  # Zwijanie wszystkich tekstów do dymków
+  mutate(across(where(is.character), ~ cell_spec(
+    str_trunc(replace_na(.x, ""), 40), 
+    tooltip = replace_na(.x, "")
+  ))) %>%
+  # Tabela wg wzoru
+  kbl(escape = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  scroll_box(width = "100%")
+
+```
+
+```{r}
+library(tidyverse)
+library(kableExtra)
+#DATA CLEANED
+# 1. Wczytanie danych
+raw_data <- read.csv("review_data.csv", sep = ";")
+
+# 2. Czyszczenie i inteligentne uzupełnianie wag (data_cleaned)
+data_cleaned <- raw_data %>%
+  # Wstępna konwersja typów
+  mutate(
+    year = parse_number(as.character(manufacturing.year)),
+    rating = parse_number(as.character(rating)),
+    horsepower = parse_number(as.character(horsepower)),
+    torque = parse_number(as.character(torque)),
+    temp_weight = parse_number(as.character(curb.weight))
+  ) %>%
+  # KROK 1: Obliczamy średnią wagę dla każdego modelu (np. Honda Civic) 
+  # Ignorujemy rocznik, żeby wyciągnąć średnią z całego okresu produkcji danego modelu
+  group_by(car.brand, car.model) %>%
+  mutate(
+    avg_model_weight = mean(temp_weight, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  # KROK 2: Uzupełniamy braki średnią, a dla brakujących modeli wpisujemy dane ręcznie
+  mutate(
+    weight_final_lbs = case_when(
+      !is.na(temp_weight) ~ temp_weight,            # Jeśli waga jest, zostawiamy
+      !is.na(avg_model_weight) ~ avg_model_weight,  # Jeśli brak, bierzemy średnią modelu
+      # Ręczne uzupełnienie dla modeli, które w ogóle nie mają wagi w zbiorze:
+      str_detect(car.model, "transit-passenger") ~ 5500,
+      str_detect(car.model, "transit-cargo") ~ 5000,
+      str_detect(car.model, "mustang-mach-e") ~ 4500,
+      str_detect(car.model, "encore-gx") ~ 3100,
+      TRUE ~ NA_real_                               # Reszta (jeśli zostanie)
+    )
+  ) %>%
+  # KROK 3: Finalne przeliczenia na metry i kg
+  mutate(
+    car.full.name = str_squish(str_remove_all(car.full.name, "\\b\\d{4}\\b")),
+    `width(m)` = round(parse_number(as.character(overall.width.without.mirrors)) * 0.0254, 2),
+    `height(m)` = round(parse_number(as.character(height)) * 0.0254, 2),
+    `length(m)` = round(parse_number(as.character(length)) * 0.0254, 2),
+    `weight(kg)` = round(weight_final_lbs * 0.453592, 2),
+    # Teraz kolumna power będzie znacznie częściej uzupełniona!
+    power = round((horsepower / `weight(kg)`) * 100, 2)
+  ) %>%
+  filter(!is.na(rating), year >= 1900, year <= 2025) %>%
+  relocate(year, .after = car.full.name) %>%
+  relocate(power, .after = torque) %>%
+  select(
+    everything(),
+    -overall.width.without.mirrors, -overall.width.with.mirrors, 
+    -height, -length, -curb.weight, -manufacturing.year,
+    -temp_weight, -avg_model_weight, -weight_final_lbs
+  )
+```
+
+### Usunięcie wierszy bez ocen
+
+Z około 3463 wierszy zostaje nam 3044. Wiersze z pustymi silnymi i słabymi stronami zostają, bo te możemy wywnioskować dokonując analizy recenzji ekspertów.
+
+### Czyszczenie *horsepower* i *torque*
+
+Usuwamy niepotrzebne dopiski na jakich obrotach sa osiągane maksymalne momenty obrotowe i konie mechaniczne oraz zamieniamy rodzaj kolumn na numeryczne.
+
+```{r}
+#| label: engine-cleaning
+#| echo: false
+#| message: false
+#| warning: false
+
+# Przygotowanie danych do podglądu z pełnym przekreśleniem jednostek i obrotów
+engine_raw <- raw_data %>%
+  head(3) %>%
+  mutate(
+    `... ` = "...",
+    horsepower = c("401 <s>hp @ 5800 rpm</s>", "445 <s>hp @ 2800 rpm</s>", "310 <s>hp @ 5500 rpm</s>"),
+    torque = c("464 <s>lb-ft @ 4000 rpm</s>", "910 <s>lb-ft @ 1600 rpm</s>", "365 <s>lb-ft @ 3000 rpm</s>"),
+    `  ...` = "..."
+  ) %>%
+  select(`... `, horsepower, torque, `  ...`)
+
+# Tabela z wyłączoną pełną szerokością i wymuszonym pozycjonowaniem do lewej
+kbl(engine_raw, escape = FALSE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "condensed"), 
+    font_size = 12, 
+    full_width = FALSE, 
+    position = "center"
+  ) %>%
+  column_spec(2:3, bold = TRUE) %>%
+  column_spec(c(1, 4), color = "#aaaaaa")
+  
+```
+
+### Konwersja jednostek
+
+Zamiana wartości z cali i stóp na system metryczny w kolumnach gdzie mamy podane wymiary samochodów i ustawienie rodzaju kolumn na numeryczne.
+
+```{r}
+#| label: data-comparison
+#| echo: false
+#| message: false
+#| warning: false
+
+# Przygotowanie wycinków danych bez kolumny modelu
+snippet_raw <- raw_data %>%
+  head(3) %>%
+  mutate(`... ` = "...", `  ...` = "...") %>%
+  select(`... `, length, height, overall.width.without.mirrors, curb.weight, `  ...`)
+
+snippet_cleaned <- data_cleaned %>%
+  head(3) %>%
+  mutate(`... ` = "...", `  ...` = "...") %>%
+  select(`... `, `length(m)`, `height(m)`, `width(m)`, `weight(kg)`, `  ...`)
+```
+
+:::::: {.columns style="display: flex; align-items: center;"}
+::: {.column width="42%"}
+```{r}
+#| echo: false
+kbl(snippet_raw) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), font_size = 12, full_width = T) %>%
+  column_spec(2:5, background = "#FFE3E3", color = "black", bold = TRUE) %>%
+  column_spec(c(1, 6), color = "#aaaaaa")
+```
+:::
+
+::: {.column width="10%" style="text-align: center; font-size: 2.5em;"}
+$\rightarrow$
+:::
+
+::: {.column width="42%"}
+```{r}
+#| echo: false
+kbl(snippet_cleaned) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), font_size = 12, full_width = T) %>%
+  column_spec(2:5, background = "#E3FFE3", color = "black", bold = TRUE) %>%
+  column_spec(c(1, 6), color = "#aaaaaa")
+```
+:::
+::::::
+
+### Definicja zmiennej Power
+
+Z uwagi na fakt, że liczba koni mechanicznych nie daje nam pełnego obrazu o rzeczywistej "mocy" samochodu, wprowadzamy kolumnę ***power*** oznaczajacą moc
+
+:::: {.columns style="display: flex; align-items: center;"}
+::: column
+$$
+\text{power} = \frac{\text{horsepower}}{\text{weight (kg)}} \cdot 100
+$$
+:::
+::::
+
+Kolumna *power* odzwierciedla stosunek [mocy do masy]{.underline} samochodu dając nam ogólny współczynnik (power-to-weight ratio [@Gillespie1992]) dający wyobrażenie o tym jak szybki będzie samochód w rzeczywistości. Pozwala to na obiektywna ocene dynamiki samochodów z różnych segmentów [@bosch2014].
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Wyświetlenie tabeli z wybranym zakresem kolumn
+data_view <- data_cleaned %>%
+  select(engine_type:power) %>%
+  head(6)
+
+data_view %>%
+  mutate(across(where(is.character), ~ cell_spec(str_trunc(replace_na(.x, ""), 30), 
+                                                 tooltip = .x))) %>%
+  kbl(escape = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed",full_width = F, position = "center"), font_size = 11) %>%
+  column_spec(ncol(data_view), background = "#eb3474", color = "black", bold = TRUE)
+```
+
+## Jakie są najczęściej występujące problemy w samochodach?
+
+### Hipoteza: Najwięcej problemów jest ze złożoną elektroniką.
+
+W celu znalezienia odpowiedzi na to pytanie posłużymy sie kolumną *weaknesses,* w której mamy gotowe wypisane słabości różnych pojazdów.
+
+Tworzymy liste pojedyńczych słów, odfiltrujemy niepotrzebne spójniki, wypełniacze oraz słowa nie wnoszące nic w kontekście wystepujących problemów. Dzielimy słowa na 2 przedziały ocen z jakimi były związane aby mieć pojęcie co w dużym stopniu zaważyło na ocenie, a co było tylko niedociągnieciem.
+
+```{r}
+#| label: problems-wordcloud-two-groups
+#| echo: false
+#| message: false
+#| warning: false
+#| fig-height: 6
+
+library(tidytext)
+library(ggwordcloud)
+library(scales)
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+# 1. Kategoryzacja błędów na dwa przedziały (granica 3.0)
+problems_data <- data_cleaned %>%
+  filter(!is.na(rating), !is.na(weaknesses)) %>%
+  mutate(
+    severity_group = case_when(
+      rating < 3.0 ~ "1. Błędy Krytyczne (Ocena < 3.0)",
+      TRUE         ~ "2. Niedociągnięcia (Ocena 3.0+)"
+    )
+  )
+
+# 2. Przygotowanie tekstu - slowa do wyrzucenia
+problem_stopwords <- c(
+  "car", "cars", "vehicle", "model", "brand", "review", "seat", "seats", "rear", "back", "front",
+  "bit", "little", "much", "some", "with", "from", "that", "this", "have", "has", "system",
+  "driver", "passenger", "looking", "design", "style", "version", "extremely", "audi",
+  "available", "offer", "option", "standard", "feature", "features", "make", "made",
+  "hard", "soft", "high", "low", "long", "short", "big", "small", "many", "well", "q5", "limited", "similarly", "equipped", "infotainment", "locations", "sedate", "california", "cargo", "due", "empty", "road", "row", "outward", "compared", "car's"
+)
+
+# Definicja funkcji gradientów
+red_pal <- col_numeric(palette = c("#ffb3b3", "#b71c1c"), domain = c(0, 1))    # Czerwony
+orange_pal <- col_numeric(palette = c("#ffe0b2", "#e65100"), domain = c(0, 1)) # Pomarańczowy
+
+tidy_problems <- problems_data %>%
+  unnest_tokens(word, weaknesses) %>%
+  filter(!str_detect(word, "^[0-9]+$")) %>%
+  filter(!word %in% stop_words$word) %>%
+  filter(!word %in% problem_stopwords) %>%
+  # Liczymy wystąpienia w grupach
+  count(severity_group, word, sort = TRUE) %>%
+  group_by(severity_group) %>%
+  # Bierzemy top 24 dla każdej grupy zgodnie z prośbą
+  slice_max(n, n = 20) %>%
+  # Normalizacja wielkości słowa
+  mutate(size_scaled = n / max(n)) %>%
+  # Przypisanie kolorów: Lewa - Czerwony, Prawa - Pomarańczowy
+  mutate(word_color = case_when(
+    str_detect(severity_group, "Krytyczne") ~ red_pal(size_scaled),
+    TRUE ~ orange_pal(size_scaled)
+  )) %>%
+  ungroup()
+
+# 3. Wizualizacja
+ggplot(tidy_problems, aes(label = word, size = size_scaled, color = word_color)) +
+  geom_text_wordcloud(area_corr = TRUE) +
+  scale_size_area(max_size = 24) + # Zachowana wielkość czcionki
+  facet_wrap(~severity_group, scales = "free") +
+  theme_minimal() +
+  scale_color_identity() + 
+  labs(
+    title = "Dominujące problemy w zależności od oceny"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16), # Wycentrowany tytuł
+    strip.text = element_text(size = 13, face = "bold", color = "black"),
+    
+    panel.spacing = unit(0, "lines"),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+```
+
+### Błędy krytyczne (ocena \<3.0)
+
+Najczęstszymi błedami krytycznymi, które znacznie wpłynęły na ocene sa problemy z silnikiem. Zatem warto uważać na wadliwe modele i dokładnie sprawdzać panujące opinie o jednostkach w samochodzie, który chcemy kupić. Drugą ciekawą wadą okazuje się być po prostu cena, czyli jak sie okazuję zdarzają sie modele przepłacone na tyle, że zaniża to całą ocene aż poniżej 3 gwiazdek.
+
+### Błędy mniej znaczące (ocena 3.0+)
+
+Przy obu problemach ukazuje się dość logiczny rezultat: wnętrze, czyli bardzo szeroki zakres: różnego rodzaje plastiki, wyposażenie typu elektryczne szyby, klimatyzacja itd. Narzekanie ekspertów na te rzeczy wydaje się oczywiste bo zawsze można przyczepić sie do tego typu niedociągnięć, szczególnie, że to właśnie wnętrze najbardziej rzuca sie w oczy przy użytkowaniu samochodu. Na drugim miejscu jest słowo "ride", które w kontekście wypowiedzi negatywnych oznacza wszelakie problemy z uczuciami podczas jazdy typu niewystrojone/za twarde/za miękkie zawieszenie, słabe prowadzenie pojazdu lub znowu problemy wnętrza rzutujące na odczucia z jazdy czyli np. bardzo trudne do obsługi kontrolki rozpraszające kierowce.
+
+::: callout-important
+## Uwaga!
+
+Warto zaznaczyć, że obie chmury słów zostaly przeskalowane tak aby miały ten sam rozmiar na potrzeby czytelności. W rzeczywistości grupa wysokich ocen jest znacznie liczniejsza jak widać na wycinku poniższej tabeli(krytyczne błędy zdarzają sie sporadycznie).
+:::
+
+```{r}
+#| label: problems-table-comparison
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidytext)
+library(kableExtra)
+library(scales)
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+# 1. Kategoryzacja błędów na dwa przedziały (granica 3.0)
+problems_data <- data_cleaned %>%
+  filter(!is.na(rating), !is.na(weaknesses)) %>%
+  mutate(
+    severity_group = case_when(
+      rating < 3.0 ~ "1. Błędy Krytyczne (Ocena < 3.0)",
+      TRUE         ~ "2. Niedociągnięcia (Ocena 3.0+)"
+    )
+  )
+
+# 2. Przygotowanie tekstu - slowa do wyrzucenia
+problem_stopwords <- c(
+  "car", "cars", "vehicle", "model", "brand", "review", "seat", "seats", "rear", "back", "front",
+  "bit", "little", "much", "some", "with", "from", "that", "this", "have", "has", "system",
+  "driver", "passenger", "looking", "design", "style", "version", "extremely", "audi",
+  "available", "offer", "option", "standard", "feature", "features", "make", "made",
+  "hard", "soft", "high", "low", "long", "short", "big", "small", "many", "well", "q5", 
+  "limited", "similarly", "equipped", "infotainment", "locations", "sedate", "california", 
+  "cargo", "due", "empty", "road", "row", "outward", "compared", "car's"
+)
+
+# 3. Przetwarzanie i liczenie słów
+word_counts <- problems_data %>%
+  unnest_tokens(word, weaknesses) %>%
+  filter(!str_detect(word, "^[0-9]+$")) %>%
+  filter(!word %in% stop_words$word) %>%
+  filter(!word %in% problem_stopwords) %>%
+  count(severity_group, word, sort = TRUE) %>%
+  group_by(severity_group) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+# 4. Przygotowanie tabeli pivot (Top 20 obok siebie)
+comparison_table <- word_counts %>%
+  filter(rank <= 11) %>%
+  select(severity_group, word, n, rank) %>%
+  pivot_wider(
+    names_from = severity_group,
+    values_from = c(word, n)
+  ) %>%
+  # Wybieramy i porządkujemy kolumny
+  select(
+    rank,
+    `word_1. Błędy Krytyczne (Ocena < 3.0)`, `n_1. Błędy Krytyczne (Ocena < 3.0)`,
+    `word_2. Niedociągnięcia (Ocena 3.0+)`, `n_2. Niedociągnięcia (Ocena 3.0+)`
+  )
+
+# 5. Wyświetlenie tabeli
+kbl(comparison_table, 
+    col.names = c("nr", "Wada (Krytyczna)", "Wystąpienia", "Wada (Drobna)", "Wystąpienia")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    font_size = 12, 
+    full_width = FALSE, 
+    position = "center"
+  ) %>%
+  add_header_above(c(" " = 1, "Segment Niskich Ocen" = 2, "Segment Wysokich Ocen" = 2)) %>%
+  column_spec(2, bold = TRUE, color = "#b71c1c") %>% # Czerwony dla krytycznych
+  column_spec(4, bold = TRUE, color = "#e65100")     # Pomarańczowy dla drobnych
+```
+
+### *Wnioski:* {#sec-wnioski1}
+
+Hipoteza błędna. Pomimo wielu róznych problemów nie ma żadnych wzmianek konkretnie o problemach z elektroniką i mimo, że wnętrze może zawierać właśnie takie problemy, to nie możemy jednozacznie stwierdzić, że własnie o to chodzi. Zatem pozostaje nam fakt, że najwięcej krytycznych problemów generują wadliwe silniki, a najwięcej drobnych problemów jest z wnętrzem samochodów. [podsumowanie](#podsumowanie)
+
+## Jakie marki są najbardziej niezawodne?
+
+### Hipoteza: Powielając panujące przekonanie o jakości japońskich marek: najbardziej niezawodne są japońskie marki.
+
+::: callout-tip
+## Założenie
+
+Przyjmujemy założenie: lubiany = niezawodny co oczywiście nie zawsze będzie prawdą, ale sporo upraszcza
+:::
+
+Na osi poziomej mamy uśrednione wartości jakie przyjmuje *rating* (1.0 - 5.0), tutaj mamy też 6, wyłącznie aby zmieścić tekst. Na osi pionowej marki samochodów. Wartości zmiennych na obu osiach są wyliczanie niezależnie od innych lat dla każdego roku. Aktualny lider w danym roku wyróżniony jest [**złotym kolorem**]{style="color: #fad543; font-weight: bold;"} i koroną.
+
+W skrócie: im dłuższa kreseczka, tym wyższa ocena. Na dole widać jak wysoka dokładnie.
+
+```{r}
+#| label: brand-race-final-pro-fix
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(plotly)
+library(ggwordcloud)
+library(tidytext)
+
+# --- 1. PRZYGOTOWANIE DANYCH ---
+# Przeliczamy oceny na skalę 0-5
+brand_race_data <- data_cleaned %>%
+  filter(!is.na(year), !is.na(rating), !is.na(car.brand)) %>%
+  group_by(year, car.brand) %>%
+  summarise(
+    avg_rating = mean(rating, na.rm = TRUE),
+    count = n(),
+    .groups = 'drop'
+  ) %>%
+  group_by(year) %>%
+  mutate(
+    # Ranking od 1 do N (najlepszy na górze)
+    current_rank = rank(-avg_rating, ties.method = "first"),
+    is_winner = current_rank == 1,
+    bar_color = if_else(is_winner, "#fad543", "#fa9162"),
+    # Etykieta przy pasku
+    label_text = if_else(is_winner, 
+                         paste0("<b>👑 ", car.brand, "</b>"), 
+                         as.character(car.brand))
+  ) %>%
+  ungroup() %>%
+  arrange(year, current_rank)
+
+# --- 2. ANIMACJA BAR PLOT ---
+fig <- plot_ly(
+  data = brand_race_data,
+  x = ~avg_rating,
+  y = ~current_rank,
+  frame = ~year,
+  ids = ~car.brand, 
+  type = 'bar',
+  orientation = 'h',
+  marker = list(
+    color = ~bar_color,  
+    line = list(color = "white", width = 1)
+  ),
+  hoverinfo = 'text',
+  hovertext = ~paste("Marka:", car.brand, 
+                    "<br>Ocena:", round(avg_rating, 2),
+                    "<br>Pozycja:", current_rank)
+) %>%
+  layout(
+    title = list(text = "<b>Ranking marek</b>", x = 0.5),
+    xaxis = list(
+      title = "Średnia ocena", 
+      range = c(0, 6.0), # Zapas na tekst
+      gridcolor = "#f0f0f0",
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Miejsce w rankingu", 
+      showticklabels = TRUE,
+      tickmode = "linear",
+      dtick = 1,
+      autorange = "reversed", # 1 na samej górze
+      fixedrange = TRUE
+    ),
+    # Zwiększony margines dolny (b=100) aby odsunąć suwak od osi X
+    margin = list(l = 70, r = 30, t = 80, b = 100),
+    plot_bgcolor = "white",
+    showlegend = FALSE
+  ) %>%
+  # 1. Nazwy marek po PRAWEJ stronie słupków
+  add_text(
+    x = ~avg_rating,
+    y = ~current_rank,
+    text = ~label_text,
+    textposition = "middle right",
+    textfont = list(size = 11, color = "black"), 
+    showlegend = FALSE
+  ) %>%
+  # 2. ROK W TLE (Statyczny, bez animacji ruchu)
+  add_text(
+    # Filtrujemy dane, aby dodać tekst raz na rok (dla pierwszego miejsca)
+    # ids='static_year' jest kluczowe, aby Plotly nie traktował tego jako nowego obiektu
+    data = brand_race_data %>% group_by(year) %>% filter(current_rank == 1),
+    x = 3, 
+    y = 1, # Góra wykresu (przy rankingu 1)
+    text = ~year,
+    ids = 'static_year', 
+    textposition = "bottom left",
+    textfont = list(size = 75, color = "rgba(0,0,0,0.1)", weight = "bold"), 
+    mode = "text",
+    marker = list(color = "white", size = 0.1), # Biała kropka (niewidoczna)
+    showlegend = FALSE,
+    hoverinfo = "none"
+  ) %>%
+  animation_opts(
+    frame = 1000, 
+    transition = 600, 
+    easing = "cubic-in-out", 
+    redraw = FALSE
+  ) %>%
+  animation_slider(
+    currentvalue = list(visible = FALSE), # Ukryty tekst na sliderze
+    pad = list(t = 70)
+  )
+
+fig
+```
+
+```{r}
+#| label: consistency-score-plot-cumulative
+
+library(tidyverse)
+library(plotly)
+
+# 1. Obliczanie punktów w każdym roku (ŚREDNIA)
+scored_brands <- data_cleaned %>%
+  filter(!is.na(year), !is.na(rating), !is.na(car.brand)) %>%
+  group_by(year, car.brand) %>%
+  summarise(
+    avg_rating = mean(rating, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  group_by(year) %>%
+  mutate(
+    # Ranking w danym roku (1 = najlepszy)
+    annual_rank = rank(-avg_rating, ties.method = "min"),
+    total_brands_in_year = n(),
+    # Punkty roczne: (Liczba marek - Ranking + 1)
+    points_yearly = total_brands_in_year - annual_rank + 1
+  ) %>%
+  ungroup()
+
+# 2. Obliczanie SUMY SKUMULOWANEJ (Running Total)
+scored_brands_cumulative <- scored_brands %>%
+  arrange(year) %>%
+  group_by(car.brand) %>%
+  mutate(
+    # To jest kluczowa zmiana: sumujemy punkty narastająco
+    total_points_cumulative = cumsum(points_yearly)
+  ) %>%
+  ungroup()
+
+# 3. Wyłonienie TOP 5 marek z największą liczbą punktów na koniec okresu
+top5_brands <- scored_brands_cumulative %>%
+  group_by(car.brand) %>%
+  summarise(final_score = max(total_points_cumulative)) %>%
+  arrange(desc(final_score)) %>%
+  head(5) %>%
+  pull(car.brand)
+
+# 4. Przygotowanie danych do wykresu dla TOP 5
+trend_data_points <- scored_brands_cumulative %>%
+  filter(car.brand %in% top5_brands) %>%
+  filter(year >= 1990, year <= 2024) %>%
+  mutate(car.brand = factor(car.brand, levels = top5_brands))
+
+# 5. Wykres liniowy SKUMULOWANYCH punktów
+brand_colors <- c("#eb3474", "#5e17eb", "#fa9162", "#00b894", "#0984e3")
+
+fig_trend <- plot_ly(
+  data = trend_data_points,
+  x = ~year,
+  y = ~total_points_cumulative, # Wyświetlamy sumę narastającą
+  color = ~car.brand,
+  colors = brand_colors,
+  type = 'scatter',
+  mode = 'lines+markers',
+  line = list(width = 3),
+  marker = list(size = 4.8),
+  text = ~paste("Marka:", car.brand, 
+                "<br>Rok:", year, 
+                "<br>Punkty w tym roku:", points_yearly,
+                "<br>Suma punktów:", total_points_cumulative),
+  hoverinfo = 'text'
+) %>%
+  layout(
+    title = list(text = "<b>Skumulowana liczba punktów</b>", x = 0.05),
+    xaxis = list(title = "Rok produkcji", gridcolor = "#f0f0f0"),
+    yaxis = list(title = "Suma punktów (narastająco)", gridcolor = "#f0f0f0"),
+    legend = list(title = list(text = "<b>Liderzy Punktacji</b>"), x = 0.05, y = 1),
+    plot_bgcolor = "white",
+    margin = list(l = 50, r = 20, t = 60, b = 50)
+  )
+
+fig_trend
+
+```
+
+Widzimy jak najlepsze 5 marek konkurowalo o najlepsze oceny na przestrzeni lat. Na osi X mamy lata produkcji. Na osi Y sume punktów dla danego roku.
+
+<div>
+
+$$
+punkty = liczba\;marek\; - \;ranking\; +1
+$$
+
+</div>
+
+### Punkty?
+
+Miara punktów zwyczajnie odzwierciedla odległość marki od pierwszego miejsca w rankingu. Kluczowe rzeczy:
+
+-   Im wyżej w rankingu - tym więcej punktów.
+
+-   Liczba punktów jest przyznawana każdej marce według wzoru co rok.
+
+Dzięki takiej mierze eliminujemy problemy ze średnią, która zaciera informacje o tym, czy dana marka np. miała kilka dobrych lat i tylko to podnosi jej średnią co daje jej możliwość konkurencji z bardziej konsekwentymi markami, takimi które trzymają poziom cały czas. Dzięki tym punktom możemy na statycznym wykresie zobaczyć "przebieg wyścigu" i widzimy kto z największa konswekwencją zbliżał sie do idealnych wyników.
+
+### *Wnioski:* {#sec-wnioski2}
+
+Hipoteza potwierdzona - wygrywa japońska Mazda i w czołówce mamy jeszcze dwóch japończyków (Acura i Toyota). [podsumowanie](#podsumowanie)
+
+## Które samochody są bardziej lubiane - stare, czy nowe?
+
+### Hipoteza: Bardziej lubiane są stare samochody.
+
+Żeby odpowiedzieć na to pytanie zwyczajnie liczymy średnie dla lat 1990-2021. Przyjmujemy założenie, że stare samochody kończą sie po 2010 roku, ale oczywiście każdy różnie zdefiniuje stary samochod. Stawiamy kreskę na końcu 2010 roku aby oddzielić dwie ery. Liczymy średnią dla lat z obu ram czasowych i sprawdzamy która wygrywa.
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+
+# 1. Przygotowanie danych
+plot_data <- data_cleaned %>%
+  # Filtrujemy sensowny zakres lat (np. 1990-2024)
+  filter(year >= 1990, year <= 2024) %>%
+  filter(!is.na(rating))
+
+# 2. Obliczenie średnich rocznych (do linii trendu)
+yearly_trend <- plot_data %>%
+  group_by(year) %>%
+  summarise(avg_rating = mean(rating, na.rm = TRUE)) %>%
+  ungroup()
+
+# 3. Obliczenie średnich dla dwóch "epok" (do tafli wody)
+# "Stare" = do końca 2010 roku
+avg_old <- plot_data %>%
+  filter(year < 2010) %>%
+  summarise(m = mean(rating, na.rm = TRUE)) %>%
+  pull(m)
+
+# "Nowe" = po 2010 roku
+avg_new <- plot_data %>%
+  filter(year >= 2010) %>%
+  summarise(m = mean(rating, na.rm = TRUE)) %>%
+  pull(m)
+
+# Punkt podziału (pomiędzy rokiem 2010 a 2011)
+split_point <- 2010.5 
+
+# 4. Tworzenie wykresu
+ggplot() +
+  # --- WARSTWA 1: "TAFLA WODY" (TŁO) ---
+  # Stare auta (lewa strona)
+  geom_rect(aes(xmin = min(yearly_trend$year), xmax = split_point, 
+                ymin = -Inf, ymax = avg_old),
+            fill = "#3498db", alpha = 0.2) +
+  # Nowe auta (prawa strona)
+  geom_rect(aes(xmin = split_point, xmax = max(yearly_trend$year), 
+                ymin = -Inf, ymax = avg_new),
+            fill = "#3498db", alpha = 0.2) +
+  
+  # --- WARSTWA 2: POZIOM "WODY" (LINIE POZIOME) ---
+  # Linia poziomu dla starych
+  geom_segment(aes(x = min(yearly_trend$year), xend = split_point, 
+                   y = avg_old, yend = avg_old),
+               color = "#2980b9", size = 1.2) +
+  # Linia poziomu dla nowych
+  geom_segment(aes(x = split_point, xend = max(yearly_trend$year), 
+                   y = avg_new, yend = avg_new),
+               color = "#2980b9", size = 1.2) +
+
+  # --- WARSTWA 3: GRANICA ŚWIATÓW ---
+  geom_vline(xintercept = split_point, linetype = "dashed", color = "black", size = 0.8) +
+
+  # --- WARSTWA 4: RZECZYWISTY TREND (LINIA ŁAMANA) ---
+  geom_line(data = yearly_trend, aes(x = year, y = avg_rating), 
+            color = "#2c3e50", size = 1) +
+  geom_point(data = yearly_trend, aes(x = year, y = avg_rating), 
+             color = "#2c3e50", size = 1.5) +
+
+  # --- WARSTWA 5: ETYKIETY ---
+  annotate("text", x = 2000, y = avg_old - 0.5, 
+           label = paste0("Stare Samochody\nŚrednia: ", round(avg_old, 2)), 
+           color = "#2980b9", fontface = "bold", size = 5) +
+  annotate("text", x = 2016, y = avg_new - 0.4, 
+           label = paste0("Nowe Samochody\nŚrednia: ", round(avg_new, 2)), 
+           color = "#2980b9", fontface = "bold", size = 5) +
+
+  # Ustawienia osi i stylu
+  scale_y_continuous(limits = c(3.5, 5.0)) + # Zoomujemy, żeby widzieć różnicę
+  scale_x_continuous(breaks = seq(1990, 2026, 5)) +
+  labs(title = "Czy kiedyś robili lepsze samochody?",
+       subtitle = "Porównanie średniej ocen przed i po roku 2010",
+       x = "Rok produkcji",
+       y = "Średnia ocena") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    panel.grid.minor = element_blank()
+  )
+```
+
+Widzimy ewidentnie zwycięzce: stare samochody. Nawet w najgorszym momencie stare samochody były bardziej lubiane od nowych. Wynika to prawdopodobnie z wielu komplikacji jakie wprowadziła nowoczesna elektronika w samochodach, która zabiła prawdziwą frajdę z jazdy. Starsze samochody sa prostsze w budowie i mniej skupione na skomplikowanych systemach podatnych na problemy.
+
+### *Wnioski:* {#sec-wnioski3}
+
+Hipoteza prawdziwa. Starsze samochody sa bardziej lubiane. [podsumowanie](#podsumowanie)
+
+## Czy moc samochodu ma wpływ na poprawe oceny?
+
+### Hipoteza: Moc samochodu nie ma wpływu na poprawe oceny.
+
+W celu sprawdzenia hipotezy weźmiemy kolumny *rating* oraz *power*, która wcześniej sobie przygotowaliśmy. Szukamy zależności pomiędzy tymi dwoma zmiennymi, więc użyjemy scatterplota i spróbujemy na nim dopasowania liniowego, aby wyłonić jakieś trendy. Dopasowanie liniowe zwraca wartości rzeczywiste z przedziału \<-1,1\> i wygląda to tak:
+
+-   Jeżeli ujemne -\> wraz ze wzrostem mocy ocena maleje. (korelacja ujemna)
+
+-   Jeżeli 0 -\> brak zależności czyli moc nie ma wpływu na ocenę (to mówi hipoteza).
+
+-   Jeżeli dodatnie -\> moc wpływa na wzrost oceny. (korelacja dodatnia)
+
+```{r}
+#| label: power-correlation-analysis-fixed
+
+library(tidyverse)
+library(kableExtra)
+library(plotly)
+
+# 1. Obliczenie współczynnika korelacji Pearsona
+# Używamy gotowej kolumny 'power' z data_cleaned
+cor_val <- cor(data_cleaned$power, data_cleaned$rating, use = "complete.obs")
+
+
+
+# 2. Wizualizacja: Wykres rozrzutu z linią trendu
+p <- ggplot(data_cleaned, aes(x = power, y = rating)) +
+  # Punkty: Zmniejszone i bardziej przezroczyste dla czytelności
+  geom_jitter(aes(text = paste("Model:", car.brand, car.model, 
+                               "<br>Power:", power, 
+                               "<br>Rating:", rating)),
+              alpha = 0.3, color = "#a64d79", size = 1.2) +
+  # Linia trendu
+  geom_smooth(method = "lm", color = "black", se = FALSE, linetype = "solid", size = 0.8) +
+  theme_minimal() +
+  labs(
+    title = paste("Korelacja mocy z oceną:", round(cor_val, 2)),
+    x = "Moc",
+    y = "Ocena"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+  )
+
+# Interaktywny wykres
+ggplotly(p, tooltip = "text")
+
+```
+
+Współczynnik korelacji jest dodatni, czyli większa moc rzeczywiście wpływa pozytywnie na ocenę samochodu, ale jak bardzo? Wartość 0.32 w tym kontekście to bardzo solidna zależność, zważając, że na ocene wpływa bardzo wiele czynników oprócz samej mocy. Widzimy więc, że moc jest dość ważnym czynnikem wpływającym na ocenę.
+
+### Jedno ale
+
+Zwyczajne dopasowanie liniowe pokazuje pewien trend, natomiast przedział mocy od ekonomicznych samochodzików miejskich aż do super szybkich samochodów sportowych jest bardzo szeroki i zacierają się pewne wnioski.
+
+Dlatego użyjemy podziału kwantylowego - dzielimy oceny na 5 równych przedziałów, każdy po około 600 ocen. Dzięki temu nie patrzymy na wszystko jako jedną całość, a na różne grupy samochodów do różnych zastosowań i jak to sie ma do korelacji mocy z oceną. Tym razem używamy dopasowania LOESS(Locally Estimated Scatterplot Smoothing), które pokaże nam płynną i lokalną linie trendu, a nie taką dopasowaną do wszystkich ocen na raz.
+
+### Punkty odniesienia
+
+Zanim zobaczymy drugi wykres, zobaczmy kilka samochodów o bardzo różnych stosunkach mocy do masy, żeby wiedzieć jakie wartości reprezentują jaką kategorię samochodów.
+
+:::::: columns
+::: {.column width="49%"}
+![Grupa 1, autka miejske (*power* = 6.9)](images/clipboard-1860880995.png){fig-alt="Grupa 1 (50-80KM)" fig-align="center" width="333"}
+:::
+
+::: {.column width="2%"}
+:::
+
+::: {.column width="49%"}
+![Grupa 3, rodzinne samochody (*power* = 10.0)](images/clipboard-1224579198.png){fig-align="center" width="333"}
+:::
+::::::
+
+:::::: columns
+::: {.column width="49%"}
+![Początek gr. 5, samochody komercyjne z wyraźnym naciskiem na moc (power = 15.3)](images/clipboard-1957643697.png){fig-align="center" width="322"}
+:::
+
+::: {.column width="2%"}
+:::
+
+::: {.column width="49%"}
+![Koniec gr.5, samochody wyścigowe (power = 39.6)](images/clipboard-1948911523.png){fig-align="center" width="314"}
+:::
+::::::
+
+```{r}
+library(tidyverse)
+library(plotly)
+
+# --- 1. PRZYGOTOWANIE DANYCH ---
+base_data <- data_cleaned %>%
+  ungroup() %>%
+  filter(!is.na(power), !is.na(rating)) %>%
+  mutate(kwantyl_num = ntile(power, 5))
+
+# --- 2. PRZYGOTOWANIE LEGENDY ---
+ranges_summary <- base_data %>%
+  group_by(kwantyl_num) %>%
+  summarise(
+    min_p = min(power),
+    max_p = max(power),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    range_label = paste0("Gr. ", kwantyl_num, ": ", min_p, " - ", max_p)
+  ) %>%
+  distinct(kwantyl_num, range_label) %>%
+  arrange(kwantyl_num)
+
+plot_data_final <- base_data %>%
+  left_join(ranges_summary, by = "kwantyl_num") %>%
+  mutate(kwantyl_f = factor(range_label, levels = unique(ranges_summary$range_label))) %>%
+  mutate(tooltip_text = paste0(
+    "<b>Model:</b> ", car.brand, " ", car.model, "<br>",
+    "<b>Moc:</b> ", power, "<br>",
+    "<b>Ocena:</b> ", rating, "<br>",
+    "<b>Grupa:</b> ", range_label
+  ))
+
+# --- 3. KOLORY ---
+my_colors <- c("#1f78b4", "#33a02c", "#984ea3", "#ff7f00", "#e31a1c")
+
+# --- 4. BUDOWA WYKRESU GGPLOT ---
+p <- ggplot(plot_data_final, aes(x = power, y = rating)) +
+
+  # Punkty (małe na wykresie - size = 1.5)
+  geom_jitter(aes(color = kwantyl_f, text = tooltip_text),
+              alpha = 0.3, size = 1, shape = 16, width = 0.5) +
+
+  # Linia LOESS
+  geom_smooth(method = "loess", se = FALSE, color = "black", size = 1.2, n = 500) +
+
+  scale_color_manual(values = my_colors, name = "Grupy mocy") +
+  theme_minimal() +
+  labs(
+    title = "Analiza trendu (LOESS) w grupach kwantylowych",
+    x = "Moc (power)",
+    y = "Ocena (rating)"
+  ) +
+  theme(plot.title = element_text(face = "bold"))
+
+# --- 5. KONWERSJA DO PLOTLY Z NAPRAWĄ LEGENDY ---
+interactive_plot <- ggplotly(p, tooltip = "text") %>%
+  layout(
+    legend = list(
+      title = list(text = "<b>Przedziały kwantylowe</b>"),
+      # --- KLUCZOWA ZMIANA ---
+      # "constant" wymusza, by punkty w legendzie były duże i wyraźne,
+      # ignorując mały rozmiar punktów na wykresie.
+      itemsizing = "constant"
+    )
+  )
+
+interactive_plot
+```
+
+Teraz wygląda to zupełnie inaczej. Dla samochodów o mocach średnich i małych(gr. 1,2,3) mamy bardzo słabe zależności. Na tyle małe, że można by bezpiecznie uznać, że to zwyczajny szum i dla samochodów miejskich lub "komercyjnych" moc nie ma wielkiego wpływu na ocenę. Natomiast sytuacja drastycznie zmienia się gdy wchodzimy w terytorium samochodów sportowych i bardzo mocnych "komercyjnych". Linia trendu nagle rośnie od końca 4 grupy mocy. Widać dość logiczną zależność: gdy znajdujemy się w sekcji sportowej to moc zaczyna mieć ogrome znaczenie i jej dostatek cieszy oceniających.
+
+### *Wnioski:* {#sec-wnioski4}
+
+Hipoteza sprawdza się tylko w grupie aut sportowych i komercyjnych klasy premium/sport. Dla pozostałych samochodów moc nie ma większego wpływu na ocenę. [podsumowanie](#podsumowanie)
+
+## Podsumowanie {#podsumowanie}
+
+Z naszego zbioru danych udało nam się wyciągnąć kilka ciekawych i praktycznych wniosków. Z pierwszego wniosku @sec-wnioski1 dowiadujemy się że,
+
+::: {#refs}
+:::
